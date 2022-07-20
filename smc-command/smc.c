@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <IOKit/IOKitLib.h>
 #include "smc.h"
@@ -87,7 +88,7 @@ void printFLT(SMCVal_t val)
 {
     float fval;
     memcpy(&fval,val.bytes,sizeof(float));
-    printf("%.0f ", fval);
+    printf("%f ", fval);
 }
 
 void printFP1F(SMCVal_t val)
@@ -216,9 +217,14 @@ void printBytesHex(SMCVal_t val)
     printf(")\n");
 }
 
-void printVal(SMCVal_t val)
+void printVal(SMCVal_t val, bool val_only)
 {
-    printf("  %-4s  [%-4s]  ", val.key, val.dataType);
+    if (val_only) {
+        printf("%-4s ", val.key);
+    } else {
+        printf("  %-4s  [%-4s]  ", val.key, val.dataType);
+    }
+    
     if (val.dataSize > 0)
     {
         if ((strcmp(val.dataType, DATATYPE_UINT8) == 0) ||
@@ -271,10 +277,14 @@ void printVal(SMCVal_t val)
 			printSI16(val);
 		else if (strcmp(val.dataType, DATATYPE_PWM) == 0 && val.dataSize == 2)
 			printPWM(val);
-		else if (strcmp(val.dataType, DATATYPE_FLT) == 0 && val.dataSize == 4)
-			printFLT(val);
+//		else if (strcmp(val.dataType, DATATYPE_FLT) == 0 && val.dataSize == 4)
+//			printFLT(val);
 
-        printBytesHex(val);
+        if (!val_only) {
+            printBytesHex(val);
+        } else {
+            printf("\n");
+        }
     }
     else
     {
@@ -482,7 +492,7 @@ UInt32 SMCReadIndexCount(void)
     return _strtoul((char *)val.bytes, val.dataSize, 10);
 }
 
-kern_return_t SMCPrintAll(void)
+kern_return_t SMCPrintAll(bool val_only)
 {
     kern_return_t result;
     SMCKeyData_t  inputStructure;
@@ -509,7 +519,7 @@ kern_return_t SMCPrintAll(void)
         _ultostr(key, outputStructure.key);
         
 		SMCReadKey(key, &val);
-        printVal(val);
+        printVal(val, val_only);
     }
     
     return kIOReturnSuccess;
@@ -597,7 +607,7 @@ kern_return_t SMCPrintFans(void)
     return kIOReturnSuccess;
 }
 
-kern_return_t SMCPrintTemps(void)
+kern_return_t SMCPrintTemps(val_only)
 {
     kern_return_t result;
     SMCKeyData_t  inputStructure;
@@ -626,12 +636,8 @@ kern_return_t SMCPrintTemps(void)
             continue;
 
         SMCReadKey(key, &val);
-        //printVal(val);
-        if (strcmp(val.dataType, DATATYPE_SP78) == 0 && val.dataSize == 2) {
-          printf("%-4s ", val.key);
-          printSP78(val);
-          printf("\n");
-        }
+        printVal(val, val_only);
+
     }
 
     return kIOReturnSuccess;
@@ -645,10 +651,11 @@ void usage(char* prog)
     printf("    -f         : fan info decoded\n");
     printf("    -t         : list all temperatures\n");
     printf("    -h         : help\n");
-    printf("    -k <key>   : key to manipulate\n");
+    printf("    -k <key>   : key to manipulate(accept multiple keys separated by ',' in -r mode)\n");
     printf("    -l         : list all keys and values\n");
     printf("    -r         : read the value of a key\n");
     printf("    -w <value> : write the specified value to a key\n");
+    printf("    -o         : only print the value for key(no datatype and hex)\n");
     printf("    -v         : version\n");
     printf("\n");
 }
@@ -684,7 +691,10 @@ int main(int argc, char *argv[])
     UInt32Char_t  key = { 0 };
     SMCVal_t      val;
     
-    while ((c = getopt(argc, argv, "fthk:lrw:v")) != -1)
+    char          *keys = NULL;
+    bool          print_val_only = false;
+    
+    while ((c = getopt(argc, argv, "fthk:lrw:ov")) != -1)
     {
         switch(c)
         {
@@ -696,6 +706,7 @@ int main(int argc, char *argv[])
                 break;
             case 'k':
                 strncpy(key, optarg, sizeof(key));   //fix for buffer overflow
+                keys = strdup(optarg);
                 key[sizeof(key) - 1] = '\0';
                 break;
             case 'l':
@@ -726,6 +737,9 @@ int main(int argc, char *argv[])
                 }
             }
                 break;
+            case 'o':
+                print_val_only = true;
+                break;
             case 'h':
             case '?':
                 op = OP_NONE;
@@ -736,26 +750,35 @@ int main(int argc, char *argv[])
     if (op == OP_NONE)
     {
         usage(argv[0]);
+        if (keys != NULL)
+            free(keys);
+        
         return 1;
     }
-    
+
     smc_init();
-    
+
     switch(op)
     {
         case OP_LIST:
-            result = SMCPrintAll();
+            result = SMCPrintAll(print_val_only);
             if (result != kIOReturnSuccess)
                 printf("Error: SMCPrintAll() = %08x\n", result);
             break;
         case OP_READ:
             if (strlen(key) > 0)
             {
-                result = SMCReadKey(key, &val);
-                if (result != kIOReturnSuccess)
-                    printf("Error: SMCReadKey() = %08x\n", result);
-                else
-                    printVal(val);
+                // rebuild the keys
+                char *token;
+
+                while ((token = strsep(&keys, ",")) != NULL) {
+                    result = SMCReadKey(token, &val);
+                    if (result != kIOReturnSuccess)
+                        printf("Error: SMCReadKey() = %08x\n", result);
+                    else
+                        printVal(val, print_val_only);
+                }
+
             }
             else
             {
@@ -768,7 +791,7 @@ int main(int argc, char *argv[])
                 printf("Error: SMCPrintFans() = %08x\n", result);
             break;
         case OP_READ_TEMPS:
-            result = SMCPrintTemps();
+            result = SMCPrintTemps(print_val_only);
             if (result != kIOReturnSuccess)
                 printf("Error: SMCPrintFans() = %08x\n", result);
             break;
@@ -788,6 +811,10 @@ int main(int argc, char *argv[])
     }
     
     smc_close();
+    
+    if (keys != NULL)
+        free(keys);
+    
     return 0;
 }
 #endif //#ifdef CMD_TOOL
